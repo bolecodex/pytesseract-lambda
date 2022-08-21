@@ -1,0 +1,5 @@
+pdf2image
+pytesseract
+boto3
+numpy
+pandas
