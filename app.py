@@ -1,7 +1,7 @@
-# try:
-#     from PIL import Image
-# except ImportError:
-#     import Image
+try:
+    from PIL import Image
+except ImportError:
+    import Image
 from pdf2image import convert_from_path, convert_from_bytes
 import pytesseract
 import pandas as pd
