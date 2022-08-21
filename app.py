@@ -1,13 +1,14 @@
-try:
-    from PIL import Image
-except ImportError:
-    import Image
+# try:
+#     from PIL import Image
+# except ImportError:
+#     import Image
 from pdf2image import convert_from_path, convert_from_bytes
 import pytesseract
 import pandas as pd
 import numpy as np
 import boto3
 import io
+import sys
 
 s3_client = boto3.client('s3')
 
@@ -99,7 +100,7 @@ def extract_stations(img, keyWord='Halt'):
 
 def Create_Dataframe(travelInfoList):
 	# [date, cost, start, middle, end, [startReturn, middleRe, endRe, returnDate]]
-	header = ["Datum", "Kosten", "Startbahhof", "Zwischenstation", "Endbahnhof"]
+	header = ["Date", "Cost","Start Station", "Transfer Station", "Terminal Station"]
 	entries = np.array([ [travelInfoList[0]], [travelInfoList[1]], [travelInfoList[2]], [travelInfoList[3]], [travelInfoList[4]] ])
 
 	if len(travelInfoList) > 6: # return train was booked
@@ -112,7 +113,7 @@ def Create_Dataframe(travelInfoList):
 
 def Add_Delta_In_Dataframes(df_newEntry):
 	## Load existing Excel File from S3 
-	obj = s3_client.get_object(Bucket='lehmanl-storer', Key='PDF_TO_JPG/Fahrtkosten.csv')
+	obj = s3_client.get_object(Bucket='trainticketdemo', Key='ExcelFile/TrainCost.csv')
 
 	status = obj.get("ResponseMetadata", {}).get("HTTPStatusCode")
 	if status == 200:
@@ -130,16 +131,16 @@ def Add_Delta_In_Dataframes(df_newEntry):
 		if False in booleanCheckOfRows.values[i]:
 			differenceCounter += 1
 	if differenceCounter == len(booleanCheckOfRows.values):
-		print("Entry does NOT Exits --> Appending it to the DataFrame file")
+		print("Entry does NOT exist --> Appending it to the DataFrame file")
 		df_read = pd.concat([df_read, df_newEntry], ignore_index=True)
 	else: 
-		print("Entry does exists, DataFrame stays the same")
+		print("Entry does exist, DataFrame stays the same")
 
-	df_read.sort_values('Datum')
+	df_read.sort_values('Date')
 	Upload_df_to_S3(df_read)
 
-def Upload_df_to_S3(df, bucket='lehmanl-storer'):
-	key = 'PDF_TO_JPG/Fahrtkosten.csv'
+def Upload_df_to_S3(df, bucket='trainticketdemo'):
+	key = 'ExcelFile/TrainCost.csv'
 	csv_buffer = io.StringIO()
 	df.to_csv(csv_buffer, index=False)
 	s3_client.put_object(
@@ -156,12 +157,41 @@ def upload_img_to_s3(img, filename):
 	img.save(buffer, "JPEG")
 	buffer.seek(0) # rewind pointer back to start
 	s3_client.put_object(
-		Bucket='lehmanl-storer',
+		Bucket='trainticketdemo',
 		Key=key,
 		Body=buffer,
 		ContentType='image/jpeg',
 	)
 	print("Uploaded Successfully into the Bucket ")
+
+def main():
+	bucket = "trainticketdemo"
+	pdfPath = 'Invoice/TrainTicket00.pdf'
+	filename = pdfPath.split('/')[-1]
+	download_path = '/tmp/{}'.format(filename)
+	try:
+		s3_client.download_file(bucket, pdfPath, download_path)
+	except Exception as error: 
+		print("There was a problem!!! \n{}".format(error))
+	## Convert PDF to Image
+	img = convert_from_path(download_path)
+	upload_img_to_s3(img[0], filename)
+	## Let the OCR Magic begin
+	price, destination = image_to_data(img[0])
+	cost = extract_costs(price)
+	date = extract_dates(destination)
+	stationsList = extract_stations(destination)
+
+	## parse the stations list to feed the right travelinfo list
+	if len(stationsList) > 3: # with return train booked
+		travelInfoList = [date, cost, stationsList[0], stationsList[1], stationsList[2], stationsList[3], stationsList[4], stationsList[5], stationsList[6]]
+		df = Create_Dataframe(travelInfoList)
+	else: # only one way 
+		travelInfoList = [date, cost, stationsList[0], stationsList[1], stationsList[2]]
+		df = Create_Dataframe(travelInfoList)
+	print(df)
+	Add_Delta_In_Dataframes(df)	
+
 
 def handler(event, context):
 	bucket = event['Records'][0]['s3']['bucket']['name']
@@ -190,3 +220,8 @@ def handler(event, context):
 		df = Create_Dataframe(travelInfoList)
 	print(df)
 	Add_Delta_In_Dataframes(df)	
+
+
+
+if __name__ == "__main__":
+    sys.exit(main())
